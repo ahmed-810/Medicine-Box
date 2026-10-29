@@ -107,6 +107,22 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+fun missingPermissions(context: android.content.Context): List<String> {
+    val needed = mutableListOf<String>()
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        needed += Manifest.permission.BLUETOOTH_CONNECT
+    }
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        needed += Manifest.permission.POST_NOTIFICATIONS
+    }
+
+    return needed.filter {
+        ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
+    }
+}
+
 fun formatTime(hour: Int, minute: Int): String = "%02d:%02d".format(hour, minute)
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -127,20 +143,26 @@ fun App(vm: MainViewModel = viewModel()) {
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        hasPermission = granted
-        if (granted) vm.loadDevices()
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { result ->
+        val btGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            result[Manifest.permission.BLUETOOTH_CONNECT] == true
+        hasPermission = btGranted
+        if (btGranted) vm.loadDevices()
     }
 
     val requestPermission = {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            permissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
-        }
+        val missing = missingPermissions(context)
+        if (missing.isNotEmpty()) permissionLauncher.launch(missing.toTypedArray())
+    }
+
+    // نطلب إذن البلوتوث وإذن الإشعارات مرة واحدة عند فتح التطبيق
+    LaunchedEffect(Unit) {
+        requestPermission()
     }
 
     LaunchedEffect(hasPermission) {
-        if (hasPermission) vm.loadDevices() else requestPermission()
+        if (hasPermission) vm.loadDevices()
     }
 
     LaunchedEffect(state.message) {
