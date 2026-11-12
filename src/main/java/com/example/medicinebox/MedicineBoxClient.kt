@@ -1,7 +1,6 @@
 package com.example.medicinebox
 
 import android.annotation.SuppressLint
-import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothSocket
 import kotlinx.coroutines.CoroutineScope
@@ -9,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.IOException
 import java.io.OutputStream
 import java.util.UUID
 
@@ -30,21 +30,49 @@ class MedicineBoxClient(
         runCatching {
             close()
 
-            @Suppress("DEPRECATION")
-            BluetoothAdapter.getDefaultAdapter()?.cancelDiscovery()
-
-            val s = device.createRfcommSocketToServiceRecord(SPP_UUID)
-            try {
-                s.connect()
-            } catch (e: Exception) {
-                runCatching { s.close() }
-                throw e
-            }
+            // مفيش cancelDiscovery هنا: التطبيق مبيبدأش بحث، وإلغاؤه
+            // محتاج إذن BLUETOOTH_SCAN على أندرويد 12+ وكان بيكسر الاتصال.
+            val s = openSocket(device)
 
             socket = s
             output = s.outputStream
             startReading(s)
         }
+    }
+
+    /** بيجرّب 3 طرق للاتصال لحد ما واحدة تنجح (بعض الموبايلات محتاجة الطريقة التالتة). */
+    @SuppressLint("MissingPermission")
+    private fun openSocket(device: BluetoothDevice): BluetoothSocket {
+        val attempts = listOf<() -> BluetoothSocket>(
+            { device.createRfcommSocketToServiceRecord(SPP_UUID) },
+            { device.createInsecureRfcommSocketToServiceRecord(SPP_UUID) },
+            {
+                device.javaClass
+                    .getMethod("createRfcommSocket", Int::class.javaPrimitiveType)
+                    .invoke(device, 1) as BluetoothSocket
+            }
+        )
+
+        var lastError: Exception? = null
+
+        for (make in attempts) {
+            val s = try {
+                make()
+            } catch (e: Exception) {
+                lastError = e
+                continue
+            }
+
+            try {
+                s.connect()
+                return s
+            } catch (e: Exception) {
+                lastError = e
+                runCatching { s.close() }
+            }
+        }
+
+        throw lastError ?: IOException("تعذر الاتصال")
     }
 
     private fun startReading(s: BluetoothSocket) {
