@@ -62,6 +62,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlin.math.abs
 
 // ألوان اللوجو
 val Navy = Color(0xFF033562)
@@ -262,6 +263,10 @@ fun HomeScreen(
                 }
             }
 
+            item {
+                ClockCard(state, onSync = { vm.syncClock() })
+            }
+
             items(state.doseCount) { i ->
                 DoseCard(
                     index = i,
@@ -315,6 +320,51 @@ fun ConnectCard(
                     }
                     TextButton(onClick = { vm.loadDevices() }) { Text("تحديث القائمة") }
                 }
+            }
+        }
+    }
+}
+
+/** بيحوّل فرق الثواني لنص مفهوم (ثواني / دقائق / ساعات / أيام) */
+fun formatOffset(seconds: Long): String {
+    val s = abs(seconds)
+
+    return when {
+        s < 60 -> "$s ثانية"
+        s < 3600 -> "${s / 60} دقيقة"
+        s < 86400 -> "${s / 3600} ساعة"
+        else -> "${s / 86400} يوم"
+    }
+}
+
+@Composable
+fun ClockCard(state: UiState, onSync: () -> Unit) {
+    val offset = state.clockOffsetSeconds
+    val inSync = offset != null && abs(offset) <= 120
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (offset != null && !inSync) GoldLight else Color.White
+        )
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("ساعة الصندوق", style = MaterialTheme.typography.titleMedium)
+
+            Text(
+                state.boxTime ?: "جاري القراءة...",
+                style = MaterialTheme.typography.headlineSmall
+            )
+
+            if (offset != null) {
+                Text(
+                    if (inSync) "✔ متزامنة مع الموبايل"
+                    else "⚠ الساعة مختلفة عن الموبايل بحوالي ${formatOffset(offset)}"
+                )
+            }
+
+            Button(onClick = onSync, modifier = Modifier.fillMaxWidth()) {
+                Text("ضبط الساعة من الموبايل")
             }
         }
     }

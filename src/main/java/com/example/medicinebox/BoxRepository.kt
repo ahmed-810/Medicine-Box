@@ -20,12 +20,15 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.util.Calendar
 
 // ======================= الإشعارات =======================
 
@@ -183,6 +186,9 @@ object BoxRepository {
 
     private val historyBuffer = mutableListOf<HistoryItem>()
 
+    // بيسأل الصندوق عن ساعته كل فترة طول ما الاتصال شغال
+    private var clockJob: Job? = null
+
     fun init(context: Context) {
         if (initialized) return
         initialized = true
@@ -194,6 +200,7 @@ object BoxRepository {
             onLine = ::handleLine,
             onDisconnected = {
                 stopKeepAliveService()
+                stopClockPolling()
 
                 _state.update {
                     it.copy(
@@ -265,7 +272,13 @@ object BoxRepository {
                     }
 
                     c.send("STATUS?")
+
+                    // ضبط ساعة الصندوق تلقائيًا بوقت الموبايل أول ما نتصل
+                    syncClock(userRequested = false)
+
                     c.send("HISTORY?")
+
+                    startClockPolling()
                 }
                 .onFailure {
                     _state.update { s ->
@@ -281,7 +294,50 @@ object BoxRepository {
     fun disconnect() {
         client?.close()
         stopKeepAliveService()
-        _state.update { it.copy(connected = false, connecting = false) }
+        stopClockPolling()
+        _state.update {
+            it.copy(connected = false, connecting = false, boxTime = null, clockOffsetSeconds = null)
+        }
+    }
+
+    // ---------------- ساعة الصندوق ----------------
+
+    /** بيبعت وقت وتاريخ الموبايل الحاليين للصندوق: SETDATE,y,mo,d,h,mi,s */
+    fun syncClock(userRequested: Boolean) {
+        val c = client ?: return
+        val now = Calendar.getInstance()
+
+        val cmd = "SETDATE,%d,%d,%d,%d,%d,%d".format(
+            now.get(Calendar.YEAR),
+            now.get(Calendar.MONTH) + 1,
+            now.get(Calendar.DAY_OF_MONTH),
+            now.get(Calendar.HOUR_OF_DAY),
+            now.get(Calendar.MINUTE),
+            now.get(Calendar.SECOND)
+        )
+
+        c.send(cmd)
+
+        // الرد بيرجع OK,SETDATE ثم DATE,... وبيتعالج في handleLine
+        if (userRequested) {
+            _state.update { it.copy(message = "جاري ضبط ساعة الصندوق...") }
+        }
+    }
+
+    private fun startClockPolling() {
+        clockJob?.cancel()
+
+        clockJob = scope.launch {
+            while (true) {
+                delay(15_000)
+                client?.send("DATE?")
+            }
+        }
+    }
+
+    private fun stopClockPolling() {
+        clockJob?.cancel()
+        clockJob = null
     }
 
     // ---------------- الأوامر ----------------
@@ -381,9 +437,32 @@ object BoxRepository {
                 _state.update { it.copy(history = sorted) }
             }
 
+            // DATE,y,mo,d,h,mi,s  (ساعة الصندوق)
+            "DATE" -> {
+                if (p.size < 7) return
+
+                val v = List(6) { i -> p[1 + i].toIntOrNull() ?: return }
+
+                val boxCal = Calendar.getInstance().apply {
+                    clear()
+                    set(v[0], v[1] - 1, v[2], v[3], v[4], v[5])
+                }
+
+                val offset = (boxCal.timeInMillis - System.currentTimeMillis()) / 1000
+
+                val text = "%04d-%02d-%02d %02d:%02d:%02d"
+                    .format(v[0], v[1], v[2], v[3], v[4], v[5])
+
+                _state.update { it.copy(boxTime = text, clockOffsetSeconds = offset) }
+            }
+
             "OK" -> {
-                if (p.getOrNull(1) == "SETTIME" || p.getOrNull(1) == "SETCOUNT") {
-                    _state.update { it.copy(message = "تم الحفظ ✅") }
+                when (p.getOrNull(1)) {
+                    "SETTIME", "SETCOUNT" ->
+                        _state.update { it.copy(message = "تم الحفظ ✅") }
+
+                    "SETDATE" ->
+                        _state.update { it.copy(message = "تم ضبط ساعة الصندوق ✅") }
                 }
             }
 
