@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.Calendar
+import java.util.Locale
 
 // ======================= الإشعارات =======================
 
@@ -307,7 +308,11 @@ object BoxRepository {
         val c = client ?: return
         val now = Calendar.getInstance()
 
-        val cmd = "SETDATE,%d,%d,%d,%d,%d,%d".format(
+        // Locale.US ضروري: على الموبايل العربي format() بيطلّع أرقام هندية (٢٠٢٦)
+        // والأردوينو مبيفهمهاش فيرد UNKNOWN_COMMAND
+        val cmd = String.format(
+            Locale.US,
+            "SETDATE,%d,%d,%d,%d,%d,%d",
             now.get(Calendar.YEAR),
             now.get(Calendar.MONTH) + 1,
             now.get(Calendar.DAY_OF_MONTH),
