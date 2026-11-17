@@ -75,7 +75,10 @@
 | `SETCOUNT,n` | عدد الجرعات (1-4) |
 | `SETTIME,index,hour,minute` | ضبط ميعاد جرعة |
 | `CONFIRM,index` | تأكيد أخذ جرعة |
+| `SETRTC,yyyy,mm,dd,hh,mi,ss` | ضبط ساعة الصندوق (RTC) على وقت معين |
 | `HELP` | قائمة الأوامر |
+
+آخر خانة في `STATUS` هي ساعة الصندوق الحالية (`yyyy-mm-dd hh:mm:ss`).
 
 الردود: `STATUS,...` / `EVENT,DUE|TAKEN|MISSED,n` / `HISTORY,...` / `OK,...` / `ERR,...`
 

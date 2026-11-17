@@ -139,6 +139,20 @@ bool isLeapYear(uint16_t year) {
           (year % 400 == 0));
 }
 
+byte daysInMonthOf(uint16_t year, byte month) {
+
+  const byte md[12] = {
+    31, 28, 31, 30, 31, 30,
+    31, 31, 30, 31, 30, 31
+  };
+
+  byte d = md[month - 1];
+
+  if (month == 2 && isLeapYear(year)) d++;
+
+  return d;
+}
+
 uint32_t rtcEpoch() {
 
   RtcDateTime dt = rtc.GetDateTime();
@@ -218,6 +232,38 @@ RtcDateTime epochToRtcDateTime(uint32_t epoch) {
   return RtcDateTime(
     year, month, day, hour, minute, second
   );
+}
+
+// ==================================================
+// SET THE BOX CLOCK (from the app)
+// ==================================================
+
+void setRtcClock(
+  uint16_t y, byte mo, byte d,
+  byte h, byte mi, byte sec
+) {
+
+  if (rtc.GetIsWriteProtected()) {
+    rtc.SetIsWriteProtected(false);
+  }
+
+  rtc.SetDateTime(RtcDateTime(y, mo, d, h, mi, sec));
+
+  if (!rtc.GetIsRunning()) {
+    rtc.SetIsRunning(true);
+  }
+
+  // The clock jumped: restart the 24h "missed" timer
+  // of any pending dose so it is not marked missed
+  // (or never marked) because of the jump.
+
+  uint32_t nowEpoch = rtcEpoch();
+
+  for (byte i = 0; i < 4; i++) {
+    if (pending[i]) dueEpoch[i] = nowEpoch;
+  }
+
+  displayNeedsUpdate = true;
 }
 
 // ==================================================
@@ -487,6 +533,13 @@ byte firstPendingDose() {
 // BLUETOOTH STATUS
 // ==================================================
 
+void btTwoDigits(byte value) {
+
+  if (value < 10) BT.print('0');
+
+  BT.print(value);
+}
+
 void btPrintStatus() {
 
   byte pendingMask = 0;
@@ -517,6 +570,25 @@ void btPrintStatus() {
     BT.print(',');
     BT.print(doseMinute[i]);
   }
+
+  // Box clock as the last field:
+  // yyyy-mm-dd hh:mm:ss
+  // (older app versions simply ignore it)
+
+  RtcDateTime t = rtc.GetDateTime();
+
+  BT.print(',');
+  BT.print(t.Year());
+  BT.print('-');
+  btTwoDigits(t.Month());
+  BT.print('-');
+  btTwoDigits(t.Day());
+  BT.print(' ');
+  btTwoDigits(t.Hour());
+  BT.print(':');
+  btTwoDigits(t.Minute());
+  BT.print(':');
+  btTwoDigits(t.Second());
 
   BT.println();
 }
@@ -672,6 +744,7 @@ void processBTCommand(char *line) {
     BT.println(F("SETCOUNT,n"));
     BT.println(F("SETTIME,index,hour,minute"));
     BT.println(F("CONFIRM,index"));
+    BT.println(F("SETRTC,yyyy,mm,dd,hh,mi,ss"));
 
     return;
   }
@@ -729,6 +802,38 @@ void processBTCommand(char *line) {
     }
 
     return;
+  }
+
+  // Set the box clock
+
+  {
+    int y, mo, d, h, mi, sec;
+
+    if (sscanf(
+          line,
+          "SETRTC,%d,%d,%d,%d,%d,%d",
+          &y, &mo, &d, &h, &mi, &sec
+        ) == 6) {
+
+      if (y >= 2024 && y <= 2099 &&
+          mo >= 1 && mo <= 12 &&
+          d >= 1 && d <= daysInMonthOf(y, mo) &&
+          h >= 0 && h <= 23 &&
+          mi >= 0 && mi <= 59 &&
+          sec >= 0 && sec <= 59) {
+
+        setRtcClock(y, mo, d, h, mi, sec);
+
+        BT.println(F("OK,SETRTC"));
+        btPrintStatus();
+
+      } else {
+
+        BT.println(F("ERR,RTC_RANGE"));
+      }
+
+      return;
+    }
   }
 
   // Confirm dose
