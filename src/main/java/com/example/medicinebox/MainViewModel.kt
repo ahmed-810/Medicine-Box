@@ -26,10 +26,7 @@ data class UiState(
         DoseSlot(8, 0), DoseSlot(12, 0), DoseSlot(18, 0), DoseSlot(22, 0)
     ),
     val history: List<HistoryItem> = emptyList(),
-    // ساعة الصندوق كما وصلت من الأردوينو (yyyy-MM-dd HH:mm:ss)
     val boxTime: String? = null,
-    // فرق ساعة الصندوق عن الموبايل بالثواني (موجب = الصندوق متقدم)
-    val clockOffsetSeconds: Long? = null,
     val message: String? = null
 )
 
@@ -68,7 +65,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun syncClock() {
-        BoxRepository.syncClock(userRequested = true)
+        BoxRepository.syncBoxClock()
     }
 
     fun clearMessage() = BoxRepository.clearMessage()
