@@ -1,3 +1,4 @@
+
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <EEPROM.h>
@@ -6,24 +7,26 @@
 #include <ThreeWire.h>
 #include <RtcDS1302.h>
 
-// MEDICINE BOX - ARDUINO MEGA 2560
-// DS1302 + HC-05 + LCD + UNO SERVO LINK
+// ==================================================
+// MEDICINE BOX
+// ARDUINO MEGA 2560 + DS1302 + HC-05
+// ==================================================
 
-#define BT   Serial1
-#define LINK Serial2
+#define BT Serial1
+
+// Link to the Arduino Uno that drives the servos
+// Mega TX2 (pin 16) -> Uno RX (pin 0), common GND
+#define SERVO_LINK Serial2
 
 const unsigned long BT_BAUD = 9600;
-const unsigned long LINK_BAUD = 9600;
 const unsigned long BT_STATUS_INTERVAL_MS = 2000;
-const unsigned long SERVO_SYNC_INTERVAL_MS = 5000;
-const unsigned long LCD_REINIT_INTERVAL_MS = 60000;
 
-// DS1302: DAT, CLK, RST
 ThreeWire rtcWire(22, 23, 24);
 RtcDS1302<ThreeWire> rtc(rtcWire);
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
+// Pins
 const byte BUTTON_PINS[4] = {2, 4, 7, 8};
 const byte DOSE_LED_PINS[4] = {A0, A1, A2, A3};
 
@@ -32,15 +35,21 @@ const byte STATUS_LED_PINS[2] = {11, 13};
 const byte SETTINGS_BUTTON_PIN = 12;
 
 const byte CLOSED_ANGLE = 0;
-const byte OPEN_ANGLE = 90;
+const byte OPEN_ANGLE = 130;
 
+// Timing
 const unsigned long DEBOUNCE_MS = 40;
 const unsigned long MESSAGE_INTERVAL_MS = 10000;
 const unsigned long MESSAGE_DURATION_MS = 1000;
 const unsigned long BUZZER_INTERVAL_MS = 350;
+const unsigned long SERVO_SYNC_INTERVAL_MS = 3000;
 
-// الجرعة تصبح فائتة بعد ساعة
-const uint32_t MISSED_AFTER_SECONDS = 60UL * 60UL;
+const uint32_t MISSED_AFTER_SECONDS =
+    24UL * 60UL * 60UL;
+
+// ==================================================
+// DOSE SETTINGS
+// ==================================================
 
 const byte DEFAULT_HOURS[4] = {8, 12, 18, 22};
 
@@ -58,14 +67,16 @@ int lastTriggerDay[4] = {-1, -1, -1, -1};
 int lastTriggerMonth[4] = {-1, -1, -1, -1};
 int lastTriggerYear[4] = {-1, -1, -1, -1};
 
-// EEPROM SETTINGS
+// ==================================================
+// EEPROM
+// ==================================================
+
 const int EEPROM_MAGIC_ADDRESS = 0;
 const int EEPROM_COUNT_ADDRESS = 1;
 const int EEPROM_SETTINGS_ADDRESS = 2;
 
 const byte EEPROM_MAGIC = 0x5A;
 
-// EVENT LOG
 const int LOG_MAGIC_ADDR = 20;
 const int LOG_NEXT_ADDR = 22;
 const int LOG_START_ADDR = 23;
@@ -77,12 +88,19 @@ const byte LOG_RECORD_SIZE = 8;
 const byte EVENT_TAKEN = 1;
 const byte EVENT_MISSED = 2;
 
+// ==================================================
 // BUTTONS
+// ==================================================
+
 bool stableState[5] = {HIGH, HIGH, HIGH, HIGH, HIGH};
 bool lastReading[5] = {HIGH, HIGH, HIGH, HIGH, HIGH};
+
 unsigned long lastChange[5] = {0, 0, 0, 0, 0};
 
+// ==================================================
 // DISPLAY AND SETTINGS
+// ==================================================
+
 bool settingsMode = false;
 byte settingsField = 0;
 bool settingsChanged = false;
@@ -91,22 +109,31 @@ bool displayNeedsUpdate = true;
 unsigned long lastMessageCycle = 0;
 unsigned long messageStartedAt = 0;
 unsigned long lastClockRefresh = 0;
-unsigned long lastLcdInit = 0;
-unsigned long lastServoSync = 0;
 
 bool showingMedicineMessage = false;
 byte lastDisplayMode = 255;
 
+// ==================================================
 // ALARM
+// ==================================================
+
 unsigned long lastBuzzerToggle = 0;
+unsigned long lastServoSync = 0;
 bool buzzerState = false;
 
+// ==================================================
 // BLUETOOTH
+// ==================================================
+
 char btLine[64];
 byte btLineLength = 0;
+
 unsigned long lastBTStatus = 0;
 
+// ==================================================
 // TIME CONVERSION
+// ==================================================
+
 bool isLeapYear(uint16_t year) {
   return ((year % 4 == 0 && year % 100 != 0) ||
           (year % 400 == 0));
@@ -122,12 +149,18 @@ uint32_t rtcEpoch() {
     days += isLeapYear(y) ? 366UL : 365UL;
   }
 
-  const byte monthDays[12] =
-    {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  const byte monthDays[12] = {
+    31, 28, 31, 30, 31, 30,
+    31, 31, 30, 31, 30, 31
+  };
 
   for (byte m = 1; m < dt.Month(); m++) {
+
     days += monthDays[m - 1];
-    if (m == 2 && isLeapYear(dt.Year())) days++;
+
+    if (m == 2 && isLeapYear(dt.Year())) {
+      days++;
+    }
   }
 
   days += dt.Day() - 1;
@@ -146,21 +179,30 @@ RtcDateTime epochToRtcDateTime(uint32_t epoch) {
   uint16_t year = 1970;
 
   while (true) {
-    uint16_t daysInYear = isLeapYear(year) ? 366 : 365;
+
+    uint16_t daysInYear =
+        isLeapYear(year) ? 366 : 365;
+
     if (days < daysInYear) break;
+
     days -= daysInYear;
     year++;
   }
 
-  const byte monthDays[12] =
-    {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  const byte monthDays[12] = {
+    31, 28, 31, 30, 31, 30,
+    31, 31, 30, 31, 30, 31
+  };
 
   byte month = 1;
 
   while (month <= 12) {
+
     uint16_t daysInMonth = monthDays[month - 1];
 
-    if (month == 2 && isLeapYear(year)) daysInMonth++;
+    if (month == 2 && isLeapYear(year)) {
+      daysInMonth++;
+    }
 
     if (days < daysInMonth) break;
 
@@ -173,19 +215,31 @@ RtcDateTime epochToRtcDateTime(uint32_t epoch) {
   byte minute = (seconds % 3600UL) / 60UL;
   byte second = seconds % 60UL;
 
-  return RtcDateTime(year, month, day, hour, minute, second);
+  return RtcDateTime(
+    year, month, day, hour, minute, second
+  );
 }
 
+// ==================================================
 // EEPROM SETTINGS
+// ==================================================
+
 void saveSettings() {
 
   EEPROM.update(EEPROM_MAGIC_ADDRESS, EEPROM_MAGIC);
   EEPROM.update(EEPROM_COUNT_ADDRESS, doseCount);
 
   for (byte i = 0; i < 4; i++) {
-    EEPROM.update(EEPROM_SETTINGS_ADDRESS + i * 2, doseHour[i]);
-    EEPROM.update(EEPROM_SETTINGS_ADDRESS + i * 2 + 1,
-                  doseMinute[i]);
+
+    EEPROM.update(
+      EEPROM_SETTINGS_ADDRESS + i * 2,
+      doseHour[i]
+    );
+
+    EEPROM.update(
+      EEPROM_SETTINGS_ADDRESS + i * 2 + 1,
+      doseMinute[i]
+    );
   }
 
   settingsChanged = false;
@@ -208,36 +262,58 @@ void loadSettings() {
 
   byte storedCount = EEPROM.read(EEPROM_COUNT_ADDRESS);
 
-  doseCount = (storedCount >= 1 && storedCount <= 4)
-              ? storedCount : 4;
+  if (storedCount >= 1 && storedCount <= 4) {
+    doseCount = storedCount;
+  } else {
+    doseCount = 4;
+  }
 
   for (byte i = 0; i < 4; i++) {
 
-    byte h = EEPROM.read(EEPROM_SETTINGS_ADDRESS + i * 2);
-    byte m = EEPROM.read(EEPROM_SETTINGS_ADDRESS + i * 2 + 1);
+    byte h = EEPROM.read(
+      EEPROM_SETTINGS_ADDRESS + i * 2
+    );
+
+    byte m = EEPROM.read(
+      EEPROM_SETTINGS_ADDRESS + i * 2 + 1
+    );
 
     if (h <= 23 && m <= 59) {
+
       doseHour[i] = h;
       doseMinute[i] = m;
+
     } else {
+
       doseHour[i] = DEFAULT_HOURS[i];
       doseMinute[i] = 0;
     }
   }
 }
 
+// ==================================================
 // EVENT LOG
+// ==================================================
+
 void initLogIfNeeded() {
 
   if (EEPROM.read(LOG_MAGIC_ADDR) != LOG_MAGIC ||
-      EEPROM.read(LOG_MAGIC_ADDR + 1) != (byte)~LOG_MAGIC) {
+      EEPROM.read(LOG_MAGIC_ADDR + 1) !=
+          (byte)~LOG_MAGIC) {
 
     EEPROM.update(LOG_MAGIC_ADDR, LOG_MAGIC);
-    EEPROM.update(LOG_MAGIC_ADDR + 1, (byte)~LOG_MAGIC);
+
+    EEPROM.update(
+      LOG_MAGIC_ADDR + 1,
+      (byte)~LOG_MAGIC
+    );
+
     EEPROM.update(LOG_NEXT_ADDR, 0);
 
     for (byte i = 0; i < LOG_CAPACITY; i++) {
-      int a = LOG_START_ADDR + (int)i * LOG_RECORD_SIZE;
+
+      int a = LOG_START_ADDR +
+              (int)i * LOG_RECORD_SIZE;
 
       for (byte j = 0; j < LOG_RECORD_SIZE; j++) {
         EEPROM.update(a + j, 0);
@@ -250,13 +326,18 @@ void initLogIfNeeded() {
   }
 }
 
-void writeLogEvent(byte doseIndex, byte eventType, uint32_t epoch) {
+void writeLogEvent(
+  byte doseIndex,
+  byte eventType,
+  uint32_t epoch
+) {
 
   initLogIfNeeded();
 
   byte slot = EEPROM.read(LOG_NEXT_ADDR);
 
-  int a = LOG_START_ADDR + (int)slot * LOG_RECORD_SIZE;
+  int a = LOG_START_ADDR +
+          (int)slot * LOG_RECORD_SIZE;
 
   EEPROM.update(a + 0, (byte)(epoch & 0xFF));
   EEPROM.update(a + 1, (byte)((epoch >> 8) & 0xFF));
@@ -273,12 +354,17 @@ void writeLogEvent(byte doseIndex, byte eventType, uint32_t epoch) {
   EEPROM.update(LOG_NEXT_ADDR, slot);
 }
 
-bool readLogEvent(byte slot, uint32_t &epoch,
-                  byte &doseNo, byte &eventType) {
+bool readLogEvent(
+  byte slot,
+  uint32_t &epoch,
+  byte &doseNo,
+  byte &eventType
+) {
 
   if (slot >= LOG_CAPACITY) return false;
 
-  int a = LOG_START_ADDR + (int)slot * LOG_RECORD_SIZE;
+  int a = LOG_START_ADDR +
+          (int)slot * LOG_RECORD_SIZE;
 
   if (EEPROM.read(a + 6) != LOG_MAGIC ||
       EEPROM.read(a + 7) != (byte)~LOG_MAGIC) {
@@ -303,8 +389,9 @@ void sendHistory() {
   uint32_t nowEpoch = rtcEpoch();
 
   uint32_t weekAgo =
-    nowEpoch > 7UL * 86400UL
-    ? nowEpoch - 7UL * 86400UL : 0;
+      nowEpoch > 7UL * 86400UL
+      ? nowEpoch - 7UL * 86400UL
+      : 0;
 
   BT.println(F("HISTORY_BEGIN"));
 
@@ -323,8 +410,11 @@ void sendHistory() {
       BT.print(doseNo);
       BT.print(',');
 
-      BT.print(eventType == EVENT_TAKEN
-               ? F("TAKEN") : F("MISSED"));
+      BT.print(
+        eventType == EVENT_TAKEN
+        ? F("TAKEN") : F("MISSED")
+      );
+
       BT.print(',');
 
       BT.print(dt.Year());
@@ -332,18 +422,22 @@ void sendHistory() {
 
       if (dt.Month() < 10) BT.print('0');
       BT.print(dt.Month());
+
       BT.print('-');
 
       if (dt.Day() < 10) BT.print('0');
       BT.print(dt.Day());
+
       BT.print(',');
 
       if (dt.Hour() < 10) BT.print('0');
       BT.print(dt.Hour());
+
       BT.print(':');
 
       if (dt.Minute() < 10) BT.print('0');
       BT.print(dt.Minute());
+
       BT.print(',');
 
       BT.println((unsigned long)ep);
@@ -353,61 +447,53 @@ void sendHistory() {
   BT.println(F("HISTORY_END"));
 }
 
+// ==================================================
 // LCD HELPERS
-void printLine(byte row, const char *text) {
+// ==================================================
+
+void printTwoDigits(byte value) {
+
+  if (value < 10) lcd.print('0');
+
+  lcd.print(value);
+}
+
+void clearLine(byte row) {
 
   lcd.setCursor(0, row);
-
-  byte n = 0;
-
-  while (text[n] && n < 16) {
-    lcd.print(text[n]);
-    n++;
-  }
-
-  while (n < 16) {
-    lcd.print(' ');
-    n++;
-  }
+  lcd.print(F("                "));
+  lcd.setCursor(0, row);
 }
 
 bool anyPendingDose() {
+
   for (byte i = 0; i < 4; i++) {
     if (pending[i]) return true;
   }
+
   return false;
 }
 
 byte firstPendingDose() {
+
   for (byte i = 0; i < 4; i++) {
     if (pending[i]) return i;
   }
+
   return 4;
 }
 
-// SERVO LINK TO UNO
-void sendServo(byte i, byte angle) {
-
-  LINK.print(F("S,"));
-  LINK.print(i);
-  LINK.print(',');
-  LINK.println(angle);
-}
-
-void syncServos() {
-
-  for (byte i = 0; i < 4; i++) {
-    sendServo(i, servoOpen[i] ? OPEN_ANGLE : CLOSED_ANGLE);
-  }
-}
-
+// ==================================================
 // BLUETOOTH STATUS
+// ==================================================
+
 void btPrintStatus() {
 
   byte pendingMask = 0;
   byte servoMask = 0;
 
   for (byte i = 0; i < 4; i++) {
+
     if (pending[i]) pendingMask |= (1 << i);
     if (servoOpen[i]) servoMask |= (1 << i);
   }
@@ -419,9 +505,15 @@ void btPrintStatus() {
   BT.print(',');
   BT.print(servoMask);
 
+  // Send all four time pairs to preserve
+  // compatibility with the existing app protocol.
+  // doseCount tells the app how many are active.
+
   for (byte i = 0; i < 4; i++) {
+
     BT.print(',');
     BT.print(doseHour[i]);
+
     BT.print(',');
     BT.print(doseMinute[i]);
   }
@@ -429,25 +521,10 @@ void btPrintStatus() {
   BT.println();
 }
 
-void btPrintDate() {
-
-  RtcDateTime n = rtc.GetDateTime();
-
-  BT.print(F("DATE,"));
-  BT.print(n.Year());
-  BT.print(',');
-  BT.print(n.Month());
-  BT.print(',');
-  BT.print(n.Day());
-  BT.print(',');
-  BT.print(n.Hour());
-  BT.print(',');
-  BT.print(n.Minute());
-  BT.print(',');
-  BT.println(n.Second());
-}
-
-void btEvent(const __FlashStringHelper *name, byte i) {
+void btEvent(
+  const __FlashStringHelper *name,
+  byte i
+) {
 
   BT.print(F("EVENT,"));
   BT.print(name);
@@ -455,7 +532,45 @@ void btEvent(const __FlashStringHelper *name, byte i) {
   BT.println(i + 1);
 }
 
+// ==================================================
+// SERVO CONTROL (through the Uno)
+// Command format: S,index,angle
+// ==================================================
+
+void sendServo(byte i, byte angle) {
+
+  if (i >= 4) return;
+
+  SERVO_LINK.print(F("S,"));
+  SERVO_LINK.print(i);
+  SERVO_LINK.print(',');
+  SERVO_LINK.println(angle);
+}
+
+// Re-send the current position of every servo
+// every few seconds so a missed command or an
+// Uno reset never leaves a box in the wrong state.
+
+void syncServos() {
+
+  if (millis() - lastServoSync <
+      SERVO_SYNC_INTERVAL_MS) {
+
+    return;
+  }
+
+  lastServoSync = millis();
+
+  for (byte i = 0; i < 4; i++) {
+
+    sendServo(i, servoOpen[i] ? OPEN_ANGLE : CLOSED_ANGLE);
+  }
+}
+
+// ==================================================
 // DOSE OPERATIONS
+// ==================================================
+
 void openServo(byte i) {
 
   if (i >= doseCount || pending[i]) return;
@@ -496,15 +611,12 @@ void confirmDose(byte i) {
 
   writeLogEvent(i, EVENT_TAKEN, rtcEpoch());
 
-  dueEpoch[i] = 0;
-
   displayNeedsUpdate = true;
 
   btEvent(F("TAKEN"), i);
   btPrintStatus();
 }
 
-// MARK MISSED AFTER ONE HOUR
 void markOverdueMissed() {
 
   uint32_t nowEpoch = rtcEpoch();
@@ -514,87 +626,59 @@ void markOverdueMissed() {
     if (pending[i] &&
         dueEpoch[i] > 0 &&
         nowEpoch >= dueEpoch[i] &&
-        nowEpoch - dueEpoch[i] >= MISSED_AFTER_SECONDS) {
+        nowEpoch - dueEpoch[i] >=
+            MISSED_AFTER_SECONDS) {
 
       writeLogEvent(i, EVENT_MISSED, nowEpoch);
 
       btEvent(F("MISSED"), i);
 
-      // صفر يمنع تسجيل MISSED مرة ثانية
-      // الجرعة تظل معلقة حتى التأكيد
-      dueEpoch[i] = 0;
+      // Keep pending and alarm active.
+      // Reset timer to prevent repeated logging
+      // every loop.
+
+      dueEpoch[i] = nowEpoch;
     }
   }
 }
 
+// ==================================================
 // BLUETOOTH COMMANDS
+// ==================================================
+
 void processBTCommand(char *line) {
 
-  while (*line == ' ' || *line == '\t') line++;
+  while (*line == ' ' || *line == '\t') {
+    line++;
+  }
 
   if (!strcmp(line, "STATUS?") ||
       !strcmp(line, "STATUS")) {
+
     btPrintStatus();
     return;
   }
 
   if (!strcmp(line, "HISTORY?")) {
+
     sendHistory();
     return;
   }
 
-  if (!strcmp(line, "DATE?")) {
-    btPrintDate();
-    return;
-  }
-
   if (!strcmp(line, "HELP")) {
+
     BT.println(F("STATUS?"));
     BT.println(F("HISTORY?"));
-    BT.println(F("DATE?"));
-    BT.println(F("SETDATE,y,mo,d,h,mi,s"));
     BT.println(F("SETCOUNT,n"));
     BT.println(F("SETTIME,index,hour,minute"));
     BT.println(F("CONFIRM,index"));
+
     return;
   }
 
   int a, b, c;
 
-  int y, mo, d, h, mi, s;
-
-  // SETDATE,2026,11,15,18,05,30
-  if (sscanf(line, "SETDATE,%d,%d,%d,%d,%d,%d",
-             &y, &mo, &d, &h, &mi, &s) == 6) {
-
-    if (y >= 2024 && y <= 2099 &&
-        mo >= 1 && mo <= 12 &&
-        d >= 1 && d <= 31 &&
-        h >= 0 && h <= 23 &&
-        mi >= 0 && mi <= 59 &&
-        s >= 0 && s <= 59) {
-
-      rtc.SetIsWriteProtected(false);
-      rtc.SetIsRunning(true);
-      rtc.SetDateTime(RtcDateTime(y, mo, d, h, mi, s));
-
-      for (byte k = 0; k < 4; k++) {
-        lastTriggerDay[k] = -1;
-        lastTriggerMonth[k] = -1;
-        lastTriggerYear[k] = -1;
-      }
-
-      displayNeedsUpdate = true;
-
-      BT.println(F("OK,SETDATE"));
-      btPrintDate();
-
-    } else {
-      BT.println(F("ERR,DATE_RANGE"));
-    }
-
-    return;
-  }
+  // Set dose count
 
   if (sscanf(line, "SETCOUNT,%d", &a) == 1) {
 
@@ -610,14 +694,20 @@ void processBTCommand(char *line) {
       btPrintStatus();
 
     } else {
+
       BT.println(F("ERR,COUNT_RANGE"));
     }
 
     return;
   }
 
-  if (sscanf(line, "SETTIME,%d,%d,%d",
-             &a, &b, &c) == 3) {
+  // Set dose time
+
+  if (sscanf(
+        line,
+        "SETTIME,%d,%d,%d",
+        &a, &b, &c
+      ) == 3) {
 
     if (a >= 1 && a <= 4 &&
         b >= 0 && b <= 23 &&
@@ -634,26 +724,34 @@ void processBTCommand(char *line) {
       btPrintStatus();
 
     } else {
+
       BT.println(F("ERR,TIME_RANGE"));
     }
 
     return;
   }
 
+  // Confirm dose
+
   if (sscanf(line, "CONFIRM,%d", &a) == 1) {
 
     if (a >= 1 && a <= 4) {
 
       if (pending[a - 1]) {
+
         confirmDose(a - 1);
+
         BT.println(F("OK,CONFIRM"));
+
       } else {
+
         BT.println(F("ERR,NOT_PENDING"));
       }
 
       btPrintStatus();
 
     } else {
+
       BT.println(F("ERR,BOX_RANGE"));
     }
 
@@ -693,18 +791,25 @@ void pollBluetooth() {
     }
   }
 
-  if (millis() - lastBTStatus >= BT_STATUS_INTERVAL_MS) {
+  if (millis() - lastBTStatus >=
+      BT_STATUS_INTERVAL_MS) {
+
     lastBTStatus = millis();
+
     btPrintStatus();
   }
 }
 
+// ==================================================
 // BUTTON DEBOUNCE
+// ==================================================
+
 bool pressed(byte index, byte pin) {
 
   bool reading = digitalRead(pin);
 
   if (reading != lastReading[index]) {
+
     lastReading[index] = reading;
     lastChange[index] = millis();
   }
@@ -715,14 +820,20 @@ bool pressed(byte index, byte pin) {
 
       stableState[index] = reading;
 
-      if (stableState[index] == LOW) return true;
+      if (stableState[index] == LOW) {
+        return true;
+      }
     }
   }
 
   return false;
 }
 
+// ==================================================
 // SCHEDULE CHECK
+// Only selected doses are scheduled.
+// ==================================================
+
 void checkDoseTimes(const RtcDateTime &now) {
 
   for (byte i = 0; i < doseCount; i++) {
@@ -730,7 +841,10 @@ void checkDoseTimes(const RtcDateTime &now) {
     if (pending[i]) continue;
 
     if (now.Hour() != doseHour[i] ||
-        now.Minute() != doseMinute[i]) continue;
+        now.Minute() != doseMinute[i]) {
+
+      continue;
+    }
 
     bool alreadyTriggered =
       lastTriggerDay[i] == now.Day() &&
@@ -747,17 +861,23 @@ void checkDoseTimes(const RtcDateTime &now) {
   }
 }
 
+// ==================================================
 // SETTINGS
+// ==================================================
+
 void enterSettings() {
 
   settingsMode = true;
   settingsField = 0;
+
   displayNeedsUpdate = true;
 }
 
 void exitSettings() {
 
-  if (settingsChanged) saveSettings();
+  if (settingsChanged) {
+    saveSettings();
+  }
 
   settingsMode = false;
 
@@ -772,6 +892,8 @@ void exitSettings() {
 
 void changeSetting(int direction) {
 
+  // Field 0 = number of doses
+
   if (settingsField == 0) {
 
     int count = (int)doseCount + direction;
@@ -781,10 +903,15 @@ void changeSetting(int direction) {
 
     doseCount = (byte)count;
 
+    // Do not delete pending doses when
+    // the selected count is reduced.
+    // They can still be confirmed.
+
   } else {
 
     byte i = (settingsField - 1) / 2;
 
+    // Do not edit inactive dose times
     if (i >= doseCount) return;
 
     if ((settingsField % 2) == 1) {
@@ -811,16 +938,23 @@ void changeSetting(int direction) {
   displayNeedsUpdate = true;
 }
 
+// ==================================================
 // SETTINGS DISPLAY
+// ==================================================
+
 void showSettingsScreen() {
 
-  char line[17];
+  clearLine(0);
+  clearLine(1);
 
   if (settingsField == 0) {
 
-    snprintf(line, sizeof(line), "Dose count: %d", doseCount);
-    printLine(0, line);
-    printLine(1, "B2+ B3- B4>");
+    lcd.setCursor(0, 0);
+    lcd.print(F("Dose count: "));
+    lcd.print(doseCount);
+
+    lcd.setCursor(0, 1);
+    lcd.print(F("B2+ B3- B4>"));
 
     return;
   }
@@ -832,60 +966,112 @@ void showSettingsScreen() {
     i = (settingsField - 1) / 2;
   }
 
-  snprintf(line, sizeof(line), "Dose %d %s",
-           i + 1,
-           (settingsField % 2) == 1 ? "hour" : "minute");
+  lcd.setCursor(0, 0);
 
-  printLine(0, line);
+  lcd.print(F("Dose "));
+  lcd.print(i + 1);
 
-  snprintf(line, sizeof(line), "%02d:%02d B2+ B3-",
-           doseHour[i], doseMinute[i]);
+  lcd.print(
+    (settingsField % 2) == 1
+    ? F(" hour")
+    : F(" minute")
+  );
 
-  printLine(1, line);
+  lcd.setCursor(0, 1);
+
+  printTwoDigits(doseHour[i]);
+
+  lcd.print(':');
+
+  printTwoDigits(doseMinute[i]);
+
+  lcd.print(F(" B2+ B3-"));
 }
 
+// ==================================================
 // SETTINGS BUTTONS
+// ==================================================
+
 void handleSettingsButtons() {
 
   byte maxField = doseCount * 2;
 
+  // B1: Previous
+
   if (pressed(0, BUTTON_PINS[0])) {
 
     settingsField =
-      (settingsField == 0) ? maxField : settingsField - 1;
+      (settingsField == 0)
+      ? maxField
+      : settingsField - 1;
 
     displayNeedsUpdate = true;
   }
 
-  if (pressed(1, BUTTON_PINS[1])) changeSetting(1);
+  // B2: Increase
 
-  if (pressed(2, BUTTON_PINS[2])) changeSetting(-1);
+  if (pressed(1, BUTTON_PINS[1])) {
+
+    changeSetting(1);
+  }
+
+  // B3: Decrease
+
+  if (pressed(2, BUTTON_PINS[2])) {
+
+    changeSetting(-1);
+  }
+
+  // B4: Next / Save
 
   if (pressed(3, BUTTON_PINS[3])) {
 
     if (settingsField >= doseCount * 2) {
+
       exitSettings();
+
     } else {
+
       settingsField++;
+
       displayNeedsUpdate = true;
     }
   }
 }
 
+// ==================================================
 // LCD DISPLAY
+// ==================================================
+
 void showClock(const RtcDateTime &now) {
 
-  char line[17];
+  clearLine(0);
 
-  snprintf(line, sizeof(line), "Time %02d:%02d:%02d",
-           now.Hour(), now.Minute(), now.Second());
+  lcd.print(F("Time "));
 
-  printLine(0, line);
+  printTwoDigits(now.Hour());
 
-  snprintf(line, sizeof(line), "Date %02d/%02d/%04d",
-           now.Day(), now.Month(), now.Year());
+  lcd.print(':');
 
-  printLine(1, line);
+  printTwoDigits(now.Minute());
+
+  lcd.print(':');
+
+  printTwoDigits(now.Second());
+
+  clearLine(1);
+
+  lcd.print(F("Date "));
+
+  printTwoDigits(now.Day());
+
+  lcd.print('/');
+
+  printTwoDigits(now.Month());
+
+  lcd.print('/');
+
+  lcd.print(now.Year());
 }
 
 void showPendingDose() {
@@ -894,35 +1080,28 @@ void showPendingDose() {
 
   if (i >= 4) return;
 
-  char line[17];
+  clearLine(0);
 
-  snprintf(line, sizeof(line), "Dose %d: CONFIRM", i + 1);
-  printLine(0, line);
+  lcd.print(F("Dose "));
+  lcd.print(i + 1);
+  lcd.print(F(" NEED CONFIRM"));
 
-  snprintf(line, sizeof(line), "Press button %d", i + 1);
-  printLine(1, line);
+  clearLine(1);
+
+  lcd.print(F("Press button "));
+  lcd.print(i + 1);
 }
 
 void updateDisplay(const RtcDateTime &now) {
 
-  unsigned long t = millis();
-
-  if (t - lastLcdInit >= LCD_REINIT_INTERVAL_MS) {
-
-    lastLcdInit = t;
-
-    lcd.init();
-    lcd.backlight();
-
-    lastDisplayMode = 255;
-    displayNeedsUpdate = true;
-  }
-
   if (settingsMode) {
 
     if (displayNeedsUpdate) {
+
       lcd.clear();
+
       showSettingsScreen();
+
       displayNeedsUpdate = false;
     }
 
@@ -931,21 +1110,30 @@ void updateDisplay(const RtcDateTime &now) {
 
   if (anyPendingDose()) {
 
-    if (displayNeedsUpdate || lastDisplayMode != 2) {
+    if (displayNeedsUpdate ||
+        lastDisplayMode != 2) {
 
       lcd.clear();
+
       showPendingDose();
 
       lastDisplayMode = 2;
+
       displayNeedsUpdate = false;
     }
 
     return;
   }
 
+  unsigned long t = millis();
+
   if (showingMedicineMessage) {
 
-    if (t - messageStartedAt < MESSAGE_DURATION_MS) return;
+    if (t - messageStartedAt <
+        MESSAGE_DURATION_MS) {
+
+      return;
+    }
 
     showingMedicineMessage = false;
 
@@ -953,7 +1141,8 @@ void updateDisplay(const RtcDateTime &now) {
     lastDisplayMode = 255;
   }
 
-  if (t - lastMessageCycle >= MESSAGE_INTERVAL_MS) {
+  if (t - lastMessageCycle >=
+      MESSAGE_INTERVAL_MS) {
 
     showingMedicineMessage = true;
 
@@ -961,7 +1150,10 @@ void updateDisplay(const RtcDateTime &now) {
     lastMessageCycle = t;
 
     lcd.clear();
-    printLine(0, "  Medicine Box  ");
+
+    lcd.setCursor(0, 0);
+
+    lcd.print(F("  Medicine Box  "));
 
     lastDisplayMode = 1;
 
@@ -974,48 +1166,72 @@ void updateDisplay(const RtcDateTime &now) {
 
     lastClockRefresh = t;
 
-    if (lastDisplayMode != 0) lcd.clear();
+    if (lastDisplayMode != 0) {
+      lcd.clear();
+    }
 
     showClock(now);
 
     lastDisplayMode = 0;
+
     displayNeedsUpdate = false;
   }
 }
 
+// ==================================================
 // ALARM AND STATUS LEDS
+// ==================================================
+
 void updateAlarm() {
 
   bool alarmNeeded = anyPendingDose();
 
-  digitalWrite(STATUS_LED_PINS[0],
-               alarmNeeded ? HIGH : LOW);
+  digitalWrite(
+    STATUS_LED_PINS[0],
+    alarmNeeded ? HIGH : LOW
+  );
 
-  digitalWrite(STATUS_LED_PINS[1],
-               alarmNeeded ? LOW : HIGH);
+  digitalWrite(
+    STATUS_LED_PINS[1],
+    alarmNeeded ? LOW : HIGH
+  );
 
   if (!alarmNeeded) {
+
     noTone(BUZZER_PIN);
+
     buzzerState = false;
+
     return;
   }
 
-  if (millis() - lastBuzzerToggle >= BUZZER_INTERVAL_MS) {
+  if (millis() - lastBuzzerToggle >=
+      BUZZER_INTERVAL_MS) {
 
     lastBuzzerToggle = millis();
 
     buzzerState = !buzzerState;
 
-    if (buzzerState) tone(BUZZER_PIN, 2000);
-    else noTone(BUZZER_PIN);
+    if (buzzerState) {
+
+      tone(BUZZER_PIN, 2000);
+
+    } else {
+
+      noTone(BUZZER_PIN);
+    }
   }
 }
 
+// ==================================================
 // SETUP
+// ==================================================
+
 void setup() {
 
   BT.begin(BT_BAUD);
-  LINK.begin(LINK_BAUD);
+
+  SERVO_LINK.begin(9600);
 
   Wire.begin();
 
@@ -1028,7 +1244,9 @@ void setup() {
     pinMode(BUTTON_PINS[i], INPUT_PULLUP);
 
     pinMode(DOSE_LED_PINS[i], OUTPUT);
+
     digitalWrite(DOSE_LED_PINS[i], LOW);
+
   }
 
   pinMode(SETTINGS_BUTTON_PIN, INPUT_PULLUP);
@@ -1036,7 +1254,9 @@ void setup() {
   pinMode(BUZZER_PIN, OUTPUT);
 
   for (byte i = 0; i < 2; i++) {
+
     pinMode(STATUS_LED_PINS[i], OUTPUT);
+
     digitalWrite(STATUS_LED_PINS[i], LOW);
   }
 
@@ -1044,7 +1264,8 @@ void setup() {
 
   initLogIfNeeded();
 
-  // DS1302
+  // DS1302 initialization
+
   rtc.Begin();
 
   RtcDateTime compiled(__DATE__, __TIME__);
@@ -1053,8 +1274,7 @@ void setup() {
     rtc.SetIsWriteProtected(false);
   }
 
-  if (!rtc.IsDateTimeValid() ||
-      rtc.GetDateTime().Year() < 2024) {
+  if (!rtc.IsDateTimeValid()) {
     rtc.SetDateTime(compiled);
   }
 
@@ -1063,53 +1283,77 @@ void setup() {
   }
 
   lastMessageCycle = millis();
+
   lastClockRefresh = 0;
-  lastLcdInit = millis();
-  lastServoSync = millis();
 
   displayNeedsUpdate = true;
 
-  delay(500);
-  syncServos();
+  // Give the Uno time to boot, then close all boxes
+
+  delay(800);
+
+  for (byte i = 0; i < 4; i++) {
+    sendServo(i, CLOSED_ANGLE);
+  }
 
   BT.println(F("MEDICINEBOX,READY"));
 
   btPrintStatus();
 }
 
+// ==================================================
 // MAIN LOOP
+// ==================================================
+
 void loop() {
 
   pollBluetooth();
 
+  syncServos();
+
   RtcDateTime now = rtc.GetDateTime();
 
-  if (millis() - lastServoSync >= SERVO_SYNC_INTERVAL_MS) {
-    lastServoSync = millis();
-    syncServos();
-  }
+  // Settings button
 
   if (pressed(4, SETTINGS_BUTTON_PIN)) {
 
-    if (settingsMode) exitSettings();
-    else enterSettings();
+    if (settingsMode) {
+
+      exitSettings();
+
+    } else {
+
+      enterSettings();
+    }
   }
+
+  // Settings mode
 
   if (settingsMode) {
 
     handleSettingsButtons();
+
     updateAlarm();
+
     updateDisplay(now);
 
     return;
   }
 
+  // Confirm buttons
+  // All four buttons can confirm an already pending dose,
+  // including one that was pending before reducing doseCount.
+
   for (byte i = 0; i < 4; i++) {
 
-    if (pressed(i, BUTTON_PINS[i]) && pending[i]) {
+    if (pressed(i, BUTTON_PINS[i]) &&
+        pending[i]) {
+
       confirmDose(i);
     }
   }
+
+  // Only selected doses are scheduled
 
   checkDoseTimes(now);
 
